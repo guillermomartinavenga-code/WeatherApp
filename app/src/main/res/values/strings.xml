@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WeatherApp</string>
+    <string name="city_input_label">City name</string>
+    <string name="search_action">Search</string>
+    <string name="loading_message">Loading current weather…</string>
+    <string name="error_generic">Could not load weather data. Please try again.</string>
+    <string name="temperature_format">%1$.1f °C</string>
+</resources>
