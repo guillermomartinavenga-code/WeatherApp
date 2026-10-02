@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.3-gitignore-too-late` (still an intentionally insecure baseline; CI/CD pipeline now in scope too).
+🚧 Work in progress — currently at stage `v0.4-buildconfig-local-properties` (first fix stage: key no longer committed to git or bundled as a plain asset; still trivially extractable from the compiled binary — see the evidence doc).
 
 ## Setup
 
@@ -15,7 +15,7 @@ Requirements: JDK 17+, an Android SDK with `compileSdk 37` available, Gradle 9+ 
 Two files are intentionally **not** tracked in this repo, since they normally hold machine- or account-specific values. Create them yourself before building — see [`CLAUDE.md`](CLAUDE.md) for exact contents:
 
 - `gradle.properties` (repo root) — safe to commit, contains no secrets; just not included here yet.
-- `local.properties` (repo root) — Android Studio generates this automatically on first sync (`sdk.dir=...`).
+- `local.properties` (repo root) — Android Studio generates this automatically on first sync (`sdk.dir=...`). As of stage `v0.4`, it's also where you add your own OpenWeatherMap API key: `OPEN_WEATHER_API_KEY=<your key>`.
 
 ```bash
 ./gradlew :app:assembleDebug

@@ -10,17 +10,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # INSECURE ON PURPOSE (stage v0.3 of the API-keys-&-secrets security
-      # training exercise, see docs/evidencia-practica-es.md). The key is
-      # hardcoded directly in this workflow definition file, which is tracked
-      # in git and visible to anyone with read access to the repository or
-      # its Actions configuration -- the same placeholder value used since
-      # stage v0.1, never a real secret. The Gradle build below does not
-      # currently consume this variable (the app still reads config.json from
-      # the committed assets, see stage v0.2); it is wired into the build
-      # starting at stage v0.4, once BuildConfig + a real GitHub Actions
-      # encrypted secret replace it.
-      OPEN_WEATHER_API_KEY: b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b
+      # FIXED (stage v0.4): the value now comes from an encrypted GitHub
+      # Actions secret (Settings -> Secrets and variables -> Actions), never
+      # from a literal in this file. The Gradle build consumes it via
+      # -POPEN_WEATHER_API_KEY, which feeds BuildConfig.OPEN_WEATHER_API_KEY
+      # (see app/build.gradle.kts). Compare with the "Debug print build
+      # environment" step below: GitHub auto-masks any occurrence of a
+      # registered secret's value in the log, unlike stage v0.3's plain env var.
+      OPEN_WEATHER_API_KEY: ${{ secrets.OPEN_WEATHER_API_KEY }}
       # Unrelated to the security staging: the repo never commits gradle.properties
       # (see README.md), so the runner's Gradle daemon falls back to a 512 MiB max
       # heap, which isn't enough for this build and causes GC thrashing / daemon
@@ -36,10 +33,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # INSECURE ON PURPOSE (stage v0.3): printing a secret-shaped environment
-      # variable to the build log. GitHub Actions does not know this value is
-      # sensitive unless it is registered as an encrypted secret, so it is not
-      # masked here -- it appears in plain text in this step's log output.
+      # Kept from stage v0.3 on purpose, same command, as a before/after
+      # contrast: this value is now registered as an encrypted secret, so
+      # GitHub Actions replaces it with *** in the log instead of printing it.
       - name: Debug print build environment
         run: echo "OpenWeatherMap key in use -> $OPEN_WEATHER_API_KEY"
 
@@ -47,7 +43,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleDebug -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"
 
       - name: Run unit tests
-        run: ./gradlew :app:testDebugUnitTest
+        run: ./gradlew :app:testDebugUnitTest -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"

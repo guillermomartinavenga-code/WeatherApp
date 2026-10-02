@@ -221,6 +221,87 @@ steps:
 
 **Pendiente para el documento final:** captura de la ejecución real de este workflow en GitHub Actions (incluyendo el log con la key impresa en texto plano), y captura de la pantalla de creación de la key real en el dashboard de OpenWeatherMap.
 
-## Etapas v0.4 en adelante — *(pendientes)*
+## Etapa v0.4 — `BuildConfig` + `local.properties` (primera etapa de "fix")
 
-Ver el plan de trabajo para la lista completa (BuildConfig + local.properties, verificación de restricción por proveedor, certificate pinning, token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).
+**Referencia teórica:** §8 (controles recomendados), específicamente la inyección vía `BuildConfig`/`local.properties` y su límite conocido: saca la key del control de versiones y de los assets del APK, pero no la saca del binario compilado.
+
+**Qué se hizo:**
+- Se borraron por completo `core/AppConfig.kt`, `core/ConfigLoader.kt` y `assets/config.json` (el mecanismo entero de v0.2/v0.3), no solo se dejaron de usar.
+- `app/build.gradle.kts` ahora lee la key en este orden: primero una Gradle property (`-POPEN_WEATHER_API_KEY=...`, la vía que usa CI), y si no está presente, `local.properties` (gitignored desde el `.gitignore` original del template, nunca comiteado) — con fallback a cadena vacía si ninguna de las dos está. El valor se expone como `BuildConfig.OPEN_WEATHER_API_KEY` vía `buildConfigField`:
+
+```kotlin
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) load(FileInputStream(localPropertiesFile))
+}
+
+fun resolveOpenWeatherApiKey(): String =
+    (project.findProperty("OPEN_WEATHER_API_KEY") as String?)
+        ?: localProperties.getProperty("OPEN_WEATHER_API_KEY")
+        ?: ""
+
+android {
+    defaultConfig {
+        buildConfigField("String", "OPEN_WEATHER_API_KEY", "\"${resolveOpenWeatherApiKey()}\"")
+    }
+    buildFeatures { buildConfig = true }
+}
+```
+
+- `WeatherApiService` pasó de depender de `AppConfig` (inyectado por Koin) a leer directamente `BuildConfig.OPEN_WEATHER_API_KEY`, ya que es una constante de compilación — no necesita DI. `AppModule.kt` se simplificó acorde (ya no instancia `ConfigLoader`).
+
+**Pipeline de CI/CD (fix, contraste directo con v0.3):**
+
+```yaml
+env:
+  # El valor ahora viene de un secret encriptado de GitHub Actions, nunca de
+  # un literal en este archivo.
+  OPEN_WEATHER_API_KEY: ${{ secrets.OPEN_WEATHER_API_KEY }}
+
+steps:
+  # Mismo comando que en v0.3, a propósito, como contraste antes/después:
+  - name: Debug print build environment
+    run: echo "OpenWeatherMap key in use -> $OPEN_WEATHER_API_KEY"
+  - name: Assemble debug APK
+    run: ./gradlew :app:assembleDebug -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"
+```
+
+En v0.3 ese mismo `echo` imprimía el valor en texto plano porque la variable era un literal del YAML, no un *secret* registrado. Ahora, una vez que Guillermo registre `OPEN_WEATHER_API_KEY` como secret real del repositorio (Settings → Secrets and variables → Actions), GitHub Actions debería reemplazar automáticamente cualquier aparición de ese valor en el log por `***` — mismo comando, resultado distinto, porque lo que cambió es *dónde* vive el valor, no el comando que lo imprime.
+
+**Verificación realizada en esta etapa:**
+- `./gradlew :app:assembleDebug :app:testDebugUnitTest -POPEN_WEATHER_API_KEY=b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b` → `BUILD SUCCESSFUL` (el valor usado es el mismo placeholder de siempre, nunca una key real; Claude no tiene acceso de escritura/lectura a `local.properties` en este entorno por diseño, así que esta verificación local pasa el valor por `-P` en vez de tocar ese archivo).
+
+**Evidencia de decompilación (`apktool`) — el límite real de `BuildConfig`:**
+
+```
+$ apktool d -f -o /tmp/weatherapp-v0.4-decompiled app/build/outputs/apk/debug/app-debug.apk
+...
+$ grep -rn "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b" /tmp/weatherapp-v0.4-decompiled
+smali_classes11/com/securitytraining/weatherapp/BuildConfig.smali:13:.field public static final OPEN_WEATHER_API_KEY:Ljava/lang/String; = "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b"
+smali_classes9/com/securitytraining/weatherapp/data/remote/WeatherApiService.smali:365:    const-string v0, "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b"
+```
+
+Confirma exactamente lo que dice §8 sobre este control: `BuildConfig` saca la key del historial de git y del APK como asset plano (ya no hay ningún archivo de config ni JSON extraíble con `unzip`), pero **no** la saca del binario — sigue en texto plano, trivialmente extraíble con `apktool`/`strings`/un decompilador. Un hallazgo adicional, más fuerte de lo esperado: el valor aparece **duplicado** en dos archivos smali distintos, no solo en `BuildConfig.smali`. Esto es porque `BuildConfig.OPEN_WEATHER_API_KEY` es una constante de compilación (`static final`), y tanto el compilador de Kotlin como R8 la **inlinean** en cada sitio donde se usa (acá, `WeatherApiService`), en vez de mantener una única referencia centralizada en runtime. El resultado práctico: cuantos más lugares del código lean la key, en más lugares del binario compilado queda copiada.
+
+**La rotación de la key no cambia este hallazgo:** para dejarlo explícito (y no solo asumirlo), se repitió exactamente el mismo experimento con un segundo valor ficticio distinto (`9f3c8a21b4e6d0729c1a5f8b3d6e9012`, simulando "la key ya rotada" tras el incidente simulado descrito más arriba), reconstruyendo el APK desde cero:
+
+```
+$ apktool d -f -o /tmp/weatherapp-v0.4-rotated app/build/outputs/apk/debug/app-debug.apk
+...
+$ grep -rn "9f3c8a21b4e6d0729c1a5f8b3d6e9012" /tmp/weatherapp-v0.4-rotated
+smali_classes9/com/securitytraining/weatherapp/data/remote/WeatherApiService.smali:365:    const-string v0, "9f3c8a21b4e6d0729c1a5f8b3d6e9012"
+smali_classes11/com/securitytraining/weatherapp/BuildConfig.smali:13:.field public static final OPEN_WEATHER_API_KEY:Ljava/lang/String; = "9f3c8a21b4e6d0729c1a5f8b3d6e9012"
+```
+
+Mismas dos ubicaciones, exactamente el mismo patrón, con un valor completamente distinto. Esto confirma que rotar la key (revocar la vieja, emitir una nueva) resuelve el problema de "¿sigue siendo válida la que se filtró?", pero **no** resuelve "¿puede alguien extraer la key actual del APK?" — son dos problemas distintos, y `BuildConfig` por sí solo no ataca el segundo. La key real y efectivamente rotada por Guillermo en el dashboard de OpenWeatherMap sigue el mismo patrón (verificado por él mismo con su propio valor, nunca compartido con Claude ni pegado en este documento).
+
+**Pendiente de Guillermo (fuera del repositorio, requerido para que la app funcione y para ver el enmascarado de CI en acción):**
+1. Generar la key real y desechable de OpenWeatherMap (si no lo hizo ya en el punto de pivote de v0.3).
+2. Agregarla a su `local.properties` local como `OPEN_WEATHER_API_KEY=<key real>` (Claude no puede tocar ese archivo).
+3. Registrar esa misma key como secret de repositorio en GitHub Actions con el nombre `OPEN_WEATHER_API_KEY`, para que el pipeline la inyecte y se pueda comparar el log enmascarado contra el de v0.3.
+
+**Pendiente para el documento final:** captura del log de GitHub Actions ya con el secret configurado (mostrando `***` en el paso `Debug print build environment`), y captura de Android Studio mostrando `BuildConfig.OPEN_WEATHER_API_KEY` resuelto en el autocompletado/build.
+
+## Etapas v0.5 en adelante — *(pendientes)*
+
+Ver el plan de trabajo para la lista completa (verificación de restricción por proveedor, certificate pinning, token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).

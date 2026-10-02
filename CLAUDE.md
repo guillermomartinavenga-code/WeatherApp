@@ -62,12 +62,13 @@ Single Gradle module (`app/`), Clean Architecture expressed through packages rat
 
 ```
 com.securitytraining.weatherapp
-├── core/           — key provisioning: this is the part that changes shape across security stages (AppConfig/ConfigLoader as of v0.2)
 ├── domain/         — pure Kotlin: WeatherRepository interface, GetCurrentWeatherUseCase, CurrentWeather model
 ├── data/           — Ktor-based WeatherApiService, DTOs (data/remote/dto), WeatherRepositoryImpl
 ├── presentation/   — Compose (WeatherScreen, WeatherViewModel, WeatherUiState) + theme/
 └── di/             — Koin modules: NetworkModule (HttpClient), AppModule (repository/use case/view model bindings)
 ```
+
+Key provisioning is the part that changes shape across security stages — as of v0.4 it's `BuildConfig.OPEN_WEATHER_API_KEY`, generated from `app/build.gradle.kts` reading `local.properties`/a Gradle property, read directly by `WeatherApiService` (no `core/` package, no DI involved; earlier stages used a since-deleted `core/AppConfig`+`core/ConfigLoader` pair).
 
 Dependency injection is Koin, wired in `WeatherApplication.onCreate()`. Networking is Ktor with the OkHttp engine (`ktor-client-okhttp`) — chosen specifically because certificate pinning (a later security stage) is configured through OkHttp's `CertificatePinner`, reachable from Ktor's engine config block.
 

@@ -1,8 +1,27 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// Stage v0.4: the key now comes from local.properties (gitignored, never
+// committed) for local builds, or a Gradle project property (-P, fed by CI
+// from an encrypted Actions secret) otherwise. Neither path touches git.
+val localProperties =
+    Properties().apply {
+        val localPropertiesFile = rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            load(FileInputStream(localPropertiesFile))
+        }
+    }
+
+fun resolveOpenWeatherApiKey(): String =
+    (project.findProperty("OPEN_WEATHER_API_KEY") as String?)
+        ?: localProperties.getProperty("OPEN_WEATHER_API_KEY")
+        ?: ""
 
 android {
     namespace = "com.securitytraining.weatherapp"
@@ -14,6 +33,8 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1"
+
+        buildConfigField("String", "OPEN_WEATHER_API_KEY", "\"${resolveOpenWeatherApiKey()}\"")
     }
 
     buildTypes {
@@ -34,6 +55,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

@@ -1,6 +1,6 @@
 package com.securitytraining.weatherapp.data.remote
 
-import com.securitytraining.weatherapp.core.AppConfig
+import com.securitytraining.weatherapp.BuildConfig
 import com.securitytraining.weatherapp.data.remote.dto.CurrentWeatherDto
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -10,14 +10,19 @@ import io.ktor.client.request.parameter
 /** Thin wrapper around the Ktor [HttpClient] for OpenWeatherMap endpoints. */
 class WeatherApiService(
     private val httpClient: HttpClient,
-    private val config: AppConfig,
 ) {
     suspend fun fetchCurrentWeather(city: String): CurrentWeatherDto =
-        httpClient.get("${config.baseUrl}weather") {
+        httpClient.get("${BASE_URL}weather") {
             parameter("q", city)
-            // INSECURE (stage v0.2): the API key comes from config.json, a
-            // plaintext file bundled as a raw APK asset. See ConfigLoader.kt.
-            parameter("appid", config.openWeatherApiKey)
+            // INSECURE (stage v0.4): BuildConfig keeps the key out of version
+            // control and out of the APK's assets, but it is still inlined as a
+            // plain string constant in the compiled bytecode. See the apktool
+            // evidence in docs/evidencia-practica-es.md.
+            parameter("appid", BuildConfig.OPEN_WEATHER_API_KEY)
             parameter("units", "metric")
         }.body()
+
+    private companion object {
+        const val BASE_URL = "https://api.openweathermap.org/data/2.5/"
+    }
 }
