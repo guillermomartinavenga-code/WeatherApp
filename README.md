@@ -6,15 +6,14 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.5-provider-restriction-not-available` (documentation-only: confirmed OpenWeatherMap offers no per-key restriction by package/SHA-1/domain/IP, unlike some other providers — see the evidence doc).
+🚧 Work in progress — currently at stage `v0.6-certificate-pinning` (OkHttp `CertificatePinner` pins the TLS leaf + intermediate CA for `api.openweathermap.org`, wired through Ktor's OkHttp engine config — see the evidence doc).
 
 ## Setup
 
 Requirements: JDK 17+, an Android SDK with `compileSdk 37` available, Gradle 9+ (via the included wrapper — no local Gradle install needed).
 
-Two files are intentionally **not** tracked in this repo, since they normally hold machine- or account-specific values. Create them yourself before building — see [`CLAUDE.md`](CLAUDE.md) for exact contents:
+One file is intentionally **not** tracked in this repo, since it holds machine- and account-specific values. Create it yourself before building — see [`CLAUDE.md`](CLAUDE.md) for exact contents:
 
-- `gradle.properties` (repo root) — safe to commit, contains no secrets; just not included here yet.
 - `local.properties` (repo root) — Android Studio generates this automatically on first sync (`sdk.dir=...`). As of stage `v0.4`, it's also where you add your own OpenWeatherMap API key: `OPEN_WEATHER_API_KEY=<your key>`.
 
 ```bash

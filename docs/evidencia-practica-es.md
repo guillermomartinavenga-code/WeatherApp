@@ -319,6 +319,109 @@ Google Maps Platform permite atar una key a un `applicationId` + SHA-1 concretos
 
 **Qué significa esto para el proyecto:** confirma que §8.4 es un control real y valioso (y disponible en otros proveedores que Guillermo pueda usar en el futuro), pero **no aplicable** a OpenWeatherMap tal como está hoy. Esto refuerza por qué las etapas anteriores (BuildConfig, y las que siguen — certificate pinning, rotación) importan más acá que en un proveedor con restricción por app: sin esa restricción, rotación y minimizar la superficie de exposición son prácticamente los únicos controles disponibles del lado del cliente.
 
-## Etapas v0.6 en adelante — *(pendientes)*
+## Etapa v0.6 — Certificate pinning (SPKI) sobre el host de la API
 
-Ver el plan de trabajo para la lista completa (certificate pinning, token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).
+**Referencia teórica:** §8 (controles complementarios de transporte), específicamente certificate/public-key pinning como defensa contra un MITM que presente un certificado válido emitido por una CA distinta a la esperada (CA comprometida, proxy corporativo con CA propia instalada, etc.).
+
+**Qué se hizo:** se configuró `OkHttp.CertificatePinner` sobre el engine OkHttp de Ktor (`di/NetworkModule.kt`), fijando el hash SHA-256 de la clave pública (SPKI) del certificado hoja de `api.openweathermap.org` más el de su CA intermedia emisora como backup:
+
+```kotlin
+private val openWeatherMapCertificatePinner =
+    CertificatePinner.Builder()
+        .add("api.openweathermap.org", "sha256/2rABlvP8a/45fRdYlmvSYEWrgBZyNampT8AqVpcPMtk=")
+        .add("api.openweathermap.org", "sha256/KqkYYX5LYAYP7XGemqzbtPPIA8x7BS/BbOIcAXf3j2k=")
+        .build()
+
+val networkModule = module {
+    single {
+        HttpClient(OkHttp) {
+            engine {
+                config {
+                    certificatePinner(openWeatherMapCertificatePinner)
+                }
+            }
+            install(ContentNegotiation) { /* ... */ }
+        }
+    }
+}
+```
+
+**Por qué dos pines y no uno solo:** pinnear únicamente el certificado hoja es frágil — en cuanto el proveedor renueve ese certificado (cambia con cada renovación, acá vence 2027-03-25), la app queda rota hasta que se publique una nueva versión con el pin actualizado. Se agregó como respaldo el pin de la CA intermedia que lo emite (`Sectigo Public Server Authentication CA OV R36`, vence 2036-03-21): mientras OpenWeatherMap siga renovando certificados bajo la misma intermedia, el pin de backup sigue validando aunque cambie el hoja. Pinnear la raíz hubiese sido demasiado laxo para el propósito del ejercicio (equivale a confiar en casi cualquier cosa que esa CA raíz emita).
+
+**Extracción de los pines — comandos reales, no inventados** (cadena completa obtenida con `openssl s_client -showcerts` contra el host real, hash SPKI calculado con la librería `cryptography` de Python sobre cada certificado de la cadena):
+
+```
+$ python3 -c "
+import subprocess, re, hashlib, base64
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
+out = subprocess.run(['openssl', 's_client', '-connect', 'api.openweathermap.org:443',
+                       '-servername', 'api.openweathermap.org', '-showcerts'],
+                      input=b'', capture_output=True, timeout=10).stdout.decode()
+for pem in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', out, re.S):
+    cert = x509.load_pem_x509_certificate(pem.encode())
+    pk_der = cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    print(cert.subject.rfc4514_string(), '->', 'sha256/' + base64.b64encode(hashlib.sha256(pk_der).digest()).decode())
+"
+CN=*.openweathermap.org,O=Openweather Ltd.,ST=London\, City of,C=GB -> sha256/2rABlvP8a/45fRdYlmvSYEWrgBZyNampT8AqVpcPMtk=
+CN=Sectigo Public Server Authentication CA OV R36,O=Sectigo Limited,C=GB -> sha256/KqkYYX5LYAYP7XGemqzbtPPIA8x7BS/BbOIcAXf3j2k=
+CN=Sectigo Public Server Authentication Root R46,O=Sectigo Limited,C=GB -> sha256/Douxi77vs4G+Ib/BogbTFymEYq0QSFXwSgVCaZcI09Q=
+CN=USERTrust RSA Certification Authority,O=The USERTRUST Network,L=Jersey City,ST=New Jersey,C=US -> sha256/x4QzPSC810K5/cMjb05Qm4k3Bw5zBn4lTdO/nEW/Td4=
+```
+
+(verificado el 2026-10-02; solo se usaron el primer y segundo hash — hoja e intermedia — como se explicó arriba).
+
+**Verificación realizada en esta etapa:**
+- `./gradlew clean :app:assembleDebug :app:testDebugUnitTest -POPEN_WEATHER_API_KEY=b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b` → `BUILD SUCCESSFUL`.
+- Prueba funcional del pinning en sí (no solo que compila): un programa Java standalone (usando el mismo `OkHttpClient`/`CertificatePinner`, fuera del árbol de tests del proyecto) hizo dos conexiones reales a `api.openweathermap.org`:
+
+  **Escenario 1 — pines correctos (los de arriba):**
+  ```
+  Result: HTTP 401 (TLS handshake + pin check succeeded)
+  ```
+  (401 porque el `appid` usado en la URL de prueba es inválido a propósito — lo relevante es que el handshake TLS y la verificación de pin pasaron sin error antes de llegar a la respuesta HTTP.)
+
+  **Escenario 2 — un pin incorrecto a propósito:**
+  ```
+  Result: javax.net.ssl.SSLPeerUnverifiedException: Certificate pinning failure!
+    Peer certificate chain:
+      sha256/2rABlvP8a/45fRdYlmvSYEWrgBZyNampT8AqVpcPMtk=: CN=*.openweathermap.org, O=Openweather Ltd., ST="London, City of", C=GB
+      sha256/KqkYYX5LYAYP7XGemqzbtPPIA8x7BS/BbOIcAXf3j2k=: CN=Sectigo Public Server Authentication CA OV R36, O=Sectigo Limited, C=GB
+      sha256/Douxi77vs4G+Ib/BogbTFymEYq0QSFXwSgVCaZcI09Q=: CN=Sectigo Public Server Authentication Root R46, O=Sectigo Limited, C=GB
+    Pinned certificates for api.openweathermap.org:
+      sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  ```
+
+  Confirma el comportamiento esperado: OkHttp calcula el pin de cada certificado de la cadena real y lo compara contra la lista configurada; si ninguno coincide, aborta la conexión en la fase TLS antes de enviar cualquier dato de la petición (incluida la API key, que nunca llega a salir por el socket en este escenario). Esto es exactamente el escenario que el pinning está pensado para frenar: un atacante en posición de MITM con un certificado válido para el dominio pero emitido por una CA distinta a la esperada.
+
+**Confirmación on-device (más fuerte que la prueba JVM aislada):** la prueba anterior corre fuera de la app, en un programa Java suelto. Para confirmar el mismo comportamiento dentro de la app real, se repitió el experimento en el emulador: se reemplazó temporalmente el pin correcto en `NetworkModule.kt` por un valor inventado, se agregó un `Log.e` temporal en el `onFailure` de `WeatherViewModel` (la cadena original solo guardaba `it.message` en el estado de UI sin loguear nada, y la UI además mostraba un string de error genérico fijo, no el mensaje real — por eso la excepción no era visible en ningún lado sin este cambio puntual), y se reconstruyó/instaló la app. Al buscar una ciudad, Logcat mostró:
+
+```
+E/WeatherViewModel: getCurrentWeather failed
+javax.net.ssl.SSLPeerUnverifiedException: Certificate pinning failure!
+  Peer certificate chain:
+    sha256/2rABlvP8a/45fRdYlmvSYEWrgBZyNampT8AqVpcPMtk=: CN=*.openweathermap.org,O=Openweather Ltd.,ST=London\, City of,C=GB
+    sha256/KqkYYX5LYAYP7XGemqzbtPPIA8x7BS/BbOIcAXf3j2k=: CN=Sectigo Public Server Authentication CA OV R36,O=Sectigo Limited,C=GB
+    sha256/Douxi77vs4G+Ib/BogbTFymEYq0QSFXwSgVCaZcI09Q=: CN=Sectigo Public Server Authentication Root R46,O=Sectigo Limited,C=GB
+  Pinned certificates for api.openweathermap.org:
+    sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+	at okhttp3.CertificatePinner.check$okhttp(CertificatePinner.kt:209)
+	at okhttp3.internal.connection.ConnectPlan.connectTls(ConnectPlan.kt:405)
+	at okhttp3.internal.connection.ConnectPlan.connectTlsEtc(ConnectPlan.kt:213)
+	at okhttp3.internal.connection.FastFallbackExchangeFinder.find(FastFallbackExchangeFinder.kt:80)
+	at okhttp3.internal.connection.RealCall.initExchange$okhttp(RealCall.kt:306)
+	... (cadena de interceptors de OkHttp) ...
+	Suppressed: java.net.SocketException: Socket is closed
+	Suppressed: javax.net.ssl.SSLPeerUnverifiedException: Certificate pinning failure! (mismo detalle)
+```
+
+Mismo resultado que en la prueba JVM, pero ahora en el stack TLS real de Android (Conscryptprovider), con el pool de hilos (`ThreadPoolExecutor`) y el dispatcher de OkHttp que usa la app en producción — confirma que el control funciona de punta a punta, no solo en un entorno de prueba simplificado. Ambos cambios temporales (pin falso + `Log.e` de diagnóstico) se revirtieron inmediatamente después de la captura; el árbol de trabajo quedó limpio, sin diferencias contra el commit de esta etapa.
+
+**Qué no resuelve este control:** certificate pinning protege el **tránsito** (que nadie intercepte la conexión en la red), no el **almacenamiento** de la key en el cliente — sigue siendo extraíble del APK por `apktool`/decompilación, exactamente como se demostró en v0.4. Son controles complementarios, no sustitutos uno del otro.
+
+**Pendiente para el documento final:** captura de Android Studio mostrando el bloque `certificatePinner(...)` en `NetworkModule.kt`, y captura de Logcat con la excepción de arriba (ya reproducida, ver evidencia on-device).
+
+## Etapas v0.7 en adelante — *(pendientes)*
+
+Ver el plan de trabajo para la lista completa (token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).
