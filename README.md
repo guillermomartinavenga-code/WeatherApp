@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-✅ Done — `v0.9-final-hardening` closes the staged progression (`v0.1` → `v0.9`). See [`SECURITY.md`](SECURITY.md) for the final control-by-control status and [`docs/evidencia-practica-es.md`](docs/evidencia-practica-es.md) for the full stage-by-stage evidence.
+✅ Done — the planned progression closed at `v0.9-final-hardening` (`v0.1` → `v0.9`) and was extended at `v0.10-gcp-secret-manager` (CI now sources the key from Google Secret Manager via Workload Identity Federation instead of a GitHub-native secret). See [`SECURITY.md`](SECURITY.md) for the control-by-control status and [`docs/evidencia-practica-es.md`](docs/evidencia-practica-es.md) for the full stage-by-stage evidence.
 
 ## Setup
 

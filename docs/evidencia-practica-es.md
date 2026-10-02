@@ -656,4 +656,134 @@ El binario de `gitleaks` se descargó puntualmente para esta verificación (auto
 
 ---
 
-Con esta etapa se cierra el recorrido planificado (`v0.1`→`v0.9`). El estado de cada control queda consolidado en [`SECURITY.md`](../SECURITY.md); este documento sigue siendo la bitácora paso a paso de cómo se llegó a eso.
+## v0.10 — Secrets manager externo: Google Secret Manager + Workload Identity Federation
+
+**Referencia teórica:** §8.3 ("Dónde y cómo almacenar los secretos" — jerarquía de opciones, con los *secrets managers* como nivel por encima de variables de entorno/secrets nativos de CI), ejercitado por primera vez de forma concreta en este proyecto — hasta `v0.9` solo se había usado el secret encriptado nativo de GitHub Actions (`v0.4`).
+
+**Por qué esta etapa, después de haber cerrado en `v0.9`:** Guillermo propuso explícitamente sumar un secrets manager *distinto* al que ya provee GitHub, para ejercitar un control que el documento de referencia menciona pero que el proyecto no había probado todavía. Decisión de diseño: no se mete un secrets manager *dentro* de la app Android (reabriría el antipatrón de "secreto en el cliente" que ya se resolvió) — el lugar correcto es el pipeline de CI/CD, reemplazando de dónde saca la key, no cómo la usa la app.
+
+**Decisión de proveedor — Google Secret Manager, con Workload Identity Federation (no una service-account key descargada):** la alternativa obvia y más simple (crear una service account, descargar su JSON de credenciales, pegarlo como un nuevo secret de GitHub) hubiese sido un paso atrás: reemplaza un secreto estático (la API key) por *otro* secreto estático (la credencial de GCP) guardado en el mismo lugar. Workload Identity Federation evita esto: GitHub Actions obtiene un token OIDC de corta duración, GCP lo cambia por credenciales temporales *solo si* el token dice venir del repo exacto configurado — no hay ninguna credencial de larga duración guardada en GitHub en ningún momento.
+
+**Qué se hizo — enteramente ejecutado por Guillermo (requiere su propia cuenta de GCP; fuera del alcance de Claude en este entorno), guiado paso a paso:**
+
+**1. Proyecto de GCP dedicado** (no reutilizar uno existente — mínimo privilegio / blast radius acotado):
+
+```
+$ gcloud init
+...
+Pick cloud project to use: [8] Create a new project
+Project ID: weatherapp-sec-training-gm
+Your current project has been set to: [weatherapp-sec-training-gm].
+```
+
+Proyecto: `weatherapp-sec-training-gm` — número de proyecto `309786944632` (confirmado en la consola).
+
+**2. APIs necesarias habilitadas:**
+
+```
+$ gcloud services enable secretmanager.googleapis.com sts.googleapis.com iamcredentials.googleapis.com iam.googleapis.com --project="$PROJECT_ID"
+Operation "operations/acat.p2-309786944632-..." finished successfully.
+```
+
+**3. El secreto en Secret Manager** (valor real tipeado directo por Guillermo vía stdin — nunca visible para Claude; se reutilizó a propósito uno de los placeholders ficticios ya usados en `v0.1`/`v0.4`, `9f3c8a21b4e6d0729c1a5f8b3d6e9012`, por continuidad y porque este documento también queda público):
+
+```
+$ gcloud secrets create OPEN_WEATHER_API_KEY --project="$PROJECT_ID" --replication-policy="automatic"
+Created secret [OPEN_WEATHER_API_KEY].
+$ printf '%s' "9f3c8a21b4e6d0729c1a5f8b3d6e9012" | gcloud secrets versions add OPEN_WEATHER_API_KEY --project="$PROJECT_ID" --data-file=-
+Created version [1] of the secret [OPEN_WEATHER_API_KEY].
+```
+
+**4. Workload Identity Pool + Provider, acotado al repo exacto** (la parte que reemplaza "confío en quien tenga esta credencial" por "confío en un token que diga ser este repo puntual"):
+
+```
+$ gcloud iam workload-identity-pools create github-actions-pool --project="$PROJECT_ID" --location="global" --display-name="GitHub Actions"
+Created workload identity pool [github-actions-pool].
+
+$ gcloud iam workload-identity-pools providers create-oidc github-actions-provider \
+  --project="$PROJECT_ID" --location="global" --workload-identity-pool="github-actions-pool" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository == 'guillermomartinavenga-code/WeatherApp'"
+Created workload identity pool provider [github-actions-provider].
+```
+
+**5. Service account dedicada + los dos bindings de mínimo privilegio** (ninguno a nivel de proyecto):
+
+```
+$ gcloud iam service-accounts create github-actions-weatherapp --project="$PROJECT_ID" --display-name="GitHub Actions - WeatherApp CI"
+Created service account [github-actions-weatherapp].
+
+# (a) la service account puede leer *este* secreto puntual, no el proyecto entero
+$ gcloud secrets add-iam-policy-binding OPEN_WEATHER_API_KEY --project="$PROJECT_ID" \
+  --role="roles/secretmanager.secretAccessor" \
+  --member="serviceAccount:github-actions-weatherapp@weatherapp-sec-training-gm.iam.gserviceaccount.com"
+Updated IAM policy for secret [OPEN_WEATHER_API_KEY].
+
+# (b) solo este repo de GitHub puede "pedir prestada" esta service account
+$ gcloud iam service-accounts add-iam-policy-binding github-actions-weatherapp@weatherapp-sec-training-gm.iam.gserviceaccount.com \
+  --project="$PROJECT_ID" --role="roles/iam.workloadIdentityUser" \
+  --member="principalSet://iam.googleapis.com/projects/309786944632/locations/global/workloadIdentityPools/github-actions-pool/attribute.repository/guillermomartinavenga-code/WeatherApp"
+Updated IAM policy for serviceAccount [github-actions-weatherapp@weatherapp-sec-training-gm.iam.gserviceaccount.com].
+```
+
+**6. Tres variables de repositorio en GitHub** (Settings → Secrets and variables → Actions → pestaña **Variables**, no Secrets — ninguno de estos tres valores es sensible por sí solo, son identificadores de recursos):
+
+| Variable | Valor |
+|---|---|
+| `GCP_PROJECT_ID` | `weatherapp-sec-training-gm` |
+| `GCP_SERVICE_ACCOUNT_EMAIL` | `github-actions-weatherapp@weatherapp-sec-training-gm.iam.gserviceaccount.com` |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/309786944632/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider` |
+
+**7. `.github/workflows/ci.yml`:** se quitó el `env: OPEN_WEATHER_API_KEY: ${{ secrets.OPEN_WEATHER_API_KEY }}` a nivel de job (la fuente de verdad desde `v0.4`) y se agregaron dos steps antes del resto del pipeline:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # necesario para pedir el token OIDC de GitHub
+
+steps:
+  - id: auth
+    uses: google-github-actions/auth@v3
+    with:
+      project_id: ${{ vars.GCP_PROJECT_ID }}
+      workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+  - id: secrets
+    uses: google-github-actions/get-secretmanager-secrets@v3
+    with:
+      secrets: |-
+        OPEN_WEATHER_API_KEY:${{ vars.GCP_PROJECT_ID }}/OPEN_WEATHER_API_KEY
+```
+
+Los steps siguientes (`Debug print build environment`, `Assemble debug APK`, `Run unit tests`) pasaron de leer `env.OPEN_WEATHER_API_KEY` (del job) a `steps.secrets.outputs.OPEN_WEATHER_API_KEY`, sin otro cambio.
+
+**Verificación de versiones y comportamiento de las Actions oficiales de Google, antes de confiar en ellas (no asumido):** se confirmó contra la documentación real de ambos repos (`google-github-actions/auth`, `google-github-actions/get-secretmanager-secrets`) que la versión mayor estable actual es `v3` para ambas, y que `get-secretmanager-secrets` enmascara automáticamente ("After a secret is accessed, its value is added to the mask of the build") cualquier valor que obtiene — el mismo mecanismo de enmascarado que GitHub usa para sus propios secrets, solo que invocado por esta Action en vez de nativamente.
+
+**Verificación real — corrida completa de GitHub Actions tras el push, pegada por Guillermo:**
+
+- Job `build`, step **"Authenticate to Google Cloud (Workload Identity Federation)"**: ✅, generó el archivo de credenciales temporal (`gha-creds-....json`) sin ningún secreto estático involucrado.
+- Job `build`, step **"Fetch OPEN_WEATHER_API_KEY from Secret Manager"**: ✅.
+- Job `build`, step **"Debug print build environment"**:
+  ```
+  OpenWeatherMap key in use -> ***
+  ```
+  Confirma el enmascarado automático de la Action de Google — mismo resultado visual que el secret nativo de GitHub en `v0.4`, ahora con la key viniendo de un sistema distinto.
+- Job `build` completo: **succeeded** (incluye `assembleDebug`, `testDebugUnitTest` y el scan de `gitleaks` de `v0.9`, todos sin cambios de comportamiento).
+- Job `verify-fails-without-secret` (de `v0.9`, sin relación con GCP): **succeeded**, mostrando la falla esperada de Gradle (`OPEN_WEATHER_API_KEY is not set...`) seguida de `OK: build failed as expected when the secret is absent.` — confirma que el control de `v0.9` sigue intacto después de este cambio.
+
+**Qué no cambia respecto a `v0.4`:** el build local (`local.properties`) no se tocó — Workload Identity Federation solo tiene sentido para una identidad de máquina como un runner de CI, no para la laptop de un desarrollador. La app en sí tampoco cambió: sigue leyendo `BuildConfig.OPEN_WEATHER_API_KEY`, sin ninguna dependencia nueva ni lógica de secrets manager embebida en el cliente Android.
+
+**Próximo paso manual de Guillermo:** una vez verificado que el flujo nuevo funciona (confirmado arriba), borrar el secret `OPEN_WEATHER_API_KEY` nativo de GitHub Actions (pestaña **Secrets**, no Variables) — ya no lo usa ningún workflow, y dejarlo sin usar es justamente el antipatrón de "secreto sin trazabilidad" que se quiere evitar.
+
+**Capturas de la consola de GCP (ya tomadas) — dos hallazgos no anticipados:**
+
+- **Secret Manager → `OPEN_WEATHER_API_KEY` → pestaña Permisos:** un único miembro con acceso explícito, `github-actions-weatherapp@weatherapp-sec-training-gm.iam.gserviceaccount.com`, rol "Usuario con acceso a secretos de Secret Manager" (`roles/secretmanager.secretAccessor`) — exactamente el binding de mínimo privilegio creado por `gcloud`, visible y auditable desde la consola, no solo desde la CLI.
+- **Workload Identity Pool `github-actions-pool` → panel de uso:** el gráfico "Recuento de intercambios de tokens correctos mediante la federación de identidades para cargas de trabajo" mostró actividad real (~0.00667/s) coincidiendo con la hora del run de GitHub Actions — confirma que la federación se **usó** de verdad en una corrida real, no que quedó solamente configurada sin ejercitarse.
+- **Mismo pool → pestaña "Cuentas de servicio conectadas":** muestra la condición de atributo tal como quedó aplicada, `attribute.repository="guillermomartinavenga-code/WeatherApp"` — confirmación visual, desde la UI de GCP (no solo desde el comando de creación), de que el alcance quedó acotado al repo exacto.
+- **Cuentas de servicio → `github-actions-weatherapp` → pestaña Claves:** la lista está vacía ("No hay filas para mostrar"). Más fuerte que lo esperado: la propia consola de Google muestra un banner de advertencia en esa pantalla, textual: *"Las claves de cuenta de servicio podrían poner en riesgo la seguridad si se ven comprometidas. Te recomendamos que no descargues claves de cuenta de servicio y que, en su lugar, uses la Federación de identidades para cargas de trabajo."* — es la plataforma misma, en su propia interfaz, validando la decisión de diseño de esta etapa (preferir WIF por sobre una key de service account descargada), no una recomendación externa de un blog o del documento de referencia.
+
+---
+
+Con esta etapa se extiende el recorrido planificado (`v0.1`→`v0.10`). El estado de cada control queda consolidado en [`SECURITY.md`](../SECURITY.md); este documento sigue siendo la bitácora paso a paso de cómo se llegó a eso.
