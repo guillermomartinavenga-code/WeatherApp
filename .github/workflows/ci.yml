@@ -9,15 +9,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      # FIXED (stage v0.4): the value now comes from an encrypted GitHub
-      # Actions secret (Settings -> Secrets and variables -> Actions), never
-      # from a literal in this file. The Gradle build consumes it via
-      # -POPEN_WEATHER_API_KEY, which feeds BuildConfig.OPEN_WEATHER_API_KEY
-      # (see app/build.gradle.kts). Compare with the "Debug print build
-      # environment" step below: GitHub auto-masks any occurrence of a
-      # registered secret's value in the log, unlike stage v0.3's plain env var.
-      OPEN_WEATHER_API_KEY: ${{ secrets.OPEN_WEATHER_API_KEY }}
+    permissions:
+      contents: read
+      # Stage v0.10: lets this job request a short-lived GitHub OIDC token
+      # and exchange it for GCP credentials via Workload Identity
+      # Federation -- no long-lived GCP key is ever stored in GitHub.
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -33,10 +30,36 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Stage v0.10: replaces the stage v0.4 GitHub-native encrypted secret
+      # as the source of truth for OPEN_WEATHER_API_KEY. Authenticates via
+      # Workload Identity Federation (vars.GCP_WORKLOAD_IDENTITY_PROVIDER /
+      # vars.GCP_SERVICE_ACCOUNT_EMAIL are plain repo variables, not
+      # secrets -- they're resource identifiers, not sensitive values) and
+      # fetches the key from Google Secret Manager. See
+      # docs/evidencia-practica-es.md for the gcloud setup (pool, provider,
+      # service account, least-privilege IAM bindings).
+      - id: auth
+        name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - id: secrets
+        name: Fetch OPEN_WEATHER_API_KEY from Secret Manager
+        uses: google-github-actions/get-secretmanager-secrets@v3
+        with:
+          secrets: |-
+            OPEN_WEATHER_API_KEY:${{ vars.GCP_PROJECT_ID }}/OPEN_WEATHER_API_KEY
+
       # Kept from stage v0.3 on purpose, same command, as a before/after
-      # contrast: this value is now registered as an encrypted secret, so
-      # GitHub Actions replaces it with *** in the log instead of printing it.
+      # contrast: the value now comes from Secret Manager (not a GitHub
+      # secret) but get-secretmanager-secrets masks it the same way, so the
+      # log still shows *** instead of the real key.
       - name: Debug print build environment
+        env:
+          OPEN_WEATHER_API_KEY: ${{ steps.secrets.outputs.OPEN_WEATHER_API_KEY }}
         run: echo "OpenWeatherMap key in use -> $OPEN_WEATHER_API_KEY"
 
       # Stage v0.9: our own, reproducible scan of the full git history --
@@ -53,9 +76,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Assemble debug APK
+        env:
+          OPEN_WEATHER_API_KEY: ${{ steps.secrets.outputs.OPEN_WEATHER_API_KEY }}
         run: ./gradlew :app:assembleDebug -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"
 
       - name: Run unit tests
+        env:
+          OPEN_WEATHER_API_KEY: ${{ steps.secrets.outputs.OPEN_WEATHER_API_KEY }}
         run: ./gradlew :app:testDebugUnitTest -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"
 
   verify-fails-without-secret:
