@@ -63,7 +63,7 @@ Single Gradle module (`app/`), Clean Architecture expressed through packages rat
 ```
 com.securitytraining.weatherapp
 ├── domain/         — pure Kotlin: WeatherRepository interface, GetCurrentWeatherUseCase, CurrentWeather model
-├── data/           — Ktor-based WeatherApiService, DTOs (data/remote/dto), WeatherRepositoryImpl
+├── data/           — Ktor-based WeatherApiService, DTOs (data/remote/dto), WeatherRepositoryImpl, InstallTokenStore (data/local)
 ├── presentation/   — Compose (WeatherScreen, WeatherViewModel, WeatherUiState) + theme/
 └── di/             — Koin modules: NetworkModule (HttpClient), AppModule (repository/use case/view model bindings)
 ```

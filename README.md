@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.6-certificate-pinning` (OkHttp `CertificatePinner` pins the TLS leaf + intermediate CA for `api.openweathermap.org`, wired through Ktor's OkHttp engine config — see the evidence doc).
+🚧 Work in progress — currently at stage `v0.7-encrypted-runtime-token` (a random install token, generated once and persisted via `EncryptedSharedPreferences`/Keystore, sent as a custom header — unrelated to and not a substitute for the OpenWeatherMap API key handling — see the evidence doc).
 
 ## Setup
 

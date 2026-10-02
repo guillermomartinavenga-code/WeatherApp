@@ -422,6 +422,80 @@ Mismo resultado que en la prueba JVM, pero ahora en el stack TLS real de Android
 
 **Pendiente para el documento final:** captura de Android Studio mostrando el bloque `certificatePinner(...)` en `NetworkModule.kt`, y captura de Logcat con la excepción de arriba (ya reproducida, ver evidencia on-device).
 
-## Etapas v0.7 en adelante — *(pendientes)*
+## Etapa v0.7 — Token de instalación en runtime vía EncryptedSharedPreferences/Keystore
 
-Ver el plan de trabajo para la lista completa (token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).
+**Referencia teórica:** el documento es explícito en que `EncryptedSharedPreferences`/Keystore **no** son un control para proteger la key de un proveedor externo (eso se resuelve del lado servidor o, en su defecto, con los controles ya aplicados en v0.4/v0.6) — sirven para proteger un **secreto generado en runtime** después de algún flujo propio de la app (login, pairing, etc.). Como WeatherApp no tiene login, se agrega la mínima feature necesaria para ejercitar ese control de forma honesta: un token anónimo de instalación, generado una sola vez en el dispositivo y reutilizado en cada request.
+
+**Qué se hizo:**
+
+```kotlin
+// data/local/InstallTokenStore.kt
+class InstallTokenStore(context: Context) {
+    private val preferences = EncryptedSharedPreferences.create(
+        context,
+        PREFERENCES_FILE_NAME,
+        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+
+    fun getOrCreateToken(): String =
+        preferences.getString(TOKEN_KEY, null)
+            ?: UUID.randomUUID().toString().also { token ->
+                preferences.edit().putString(TOKEN_KEY, token).apply()
+            }
+}
+```
+
+El token se genera con `UUID.randomUUID()` la primera vez que se pide, se persiste cifrado (clave maestra respaldada por Android Keystore, `AES256_GCM`), y de ahí en más se reutiliza. `WeatherApiService` lo adjunta como header custom en cada request:
+
+```kotlin
+header("X-Install-Token", installTokenStore.getOrCreateToken())
+```
+
+Separación de responsabilidades explícita: este token viaja en un header propio, nunca se mezcla con `appid` (la key de OpenWeatherMap) ni la reemplaza — son dos secretos de naturaleza distinta, con controles distintos, documentados por separado a propósito.
+
+**Hallazgo real durante la implementación — la librería que el documento recomienda ya está deprecada:** al compilar, el propio compilador de Kotlin marcó `EncryptedSharedPreferences`, `MasterKey` y los enums de esquema de cifrado como `@Deprecated`. Se verificó contra fuentes externas (no solo el warning del compilador): toda la librería **Jetpack Security Crypto** fue deprecada a partir de la versión `1.1.0-beta01` (junio de 2025), **sin nuevas releases planeadas**, en favor de:
+
+1. Uso directo de Android Keystore (`KeyGenParameterSpec` + `Cipher`), persistiendo el texto cifrado en `SharedPreferences`/`DataStore` normales — mismo nivel de seguridad, sin la dependencia deprecada.
+2. Jetpack DataStore combinado con Tink (de Google) para cifrado a nivel de stream.
+
+Fuentes: [Include Security — "EncryptedSharedPreferences is Dead"](https://blog.includesecurity.com/2026/08/encryptedsharedpreferences-is-dead-heres-what-you-should-use-instead/), [ProAndroidDev — "Goodbye EncryptedSharedPreferences: A 2026 Migration Guide"](https://proandroiddev.com/goodbye-encryptedsharedpreferences-a-2026-migration-guide-4b819b4a537a), [Android Developers Reference — EncryptedSharedPreferences](https://developer.android.com/reference/androidx/security/crypto/EncryptedSharedPreferences).
+
+**Decisión para este ejercicio:** se mantiene `EncryptedSharedPreferences` de todos modos, porque (a) sigue siendo funcional y compila sin errores — solo warnings —, (b) es la API que el documento de referencia describe explícitamente, y el objetivo de esta etapa es ejercitar *ese* control tal como está documentado, y (c) migrar a Keystore directo o DataStore+Tink sería una reescritura fuera del alcance mínimo de este ejercicio. Queda documentado como nota honesta: en un proyecto real nuevo, hoy correspondería usar una de las dos alternativas vigentes en vez de esta librería.
+
+**Verificación realizada en esta etapa:**
+- `./gradlew :app:assembleDebug :app:testDebugUnitTest -POPEN_WEATHER_API_KEY=b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b` → `BUILD SUCCESSFUL` (con los warnings de deprecación arriba mencionados, sin errores).
+
+**Evidencia on-device — el archivo de preferencias queda cifrado, no solo el token:**
+
+```
+$ adb shell run-as com.securitytraining.weatherapp \
+    cat /data/data/com.securitytraining.weatherapp/shared_prefs/install_token_store.xml
+```
+
+Primera corrida (justo después de abrir la app, antes de buscar ninguna ciudad):
+
+```xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="__androidx_security_crypto_encrypted_prefs_key_keyset__">12a901255c9896a2...</string>
+    <string name="__androidx_security_crypto_encrypted_prefs_value_keyset__">1288015aa8bac2ce...</string>
+</map>
+```
+
+Solo aparecen las *keysets* de Tink (las claves de cifrado en sí, generadas automáticamente al construir `InstallTokenStore` porque Koin resuelve todo el grafo de dependencias apenas la pantalla pide el `ViewModel` — y `WeatherApiService` necesita una instancia de `InstallTokenStore` en su constructor, aunque `getOrCreateToken()` todavía no se haya llamado). Después de buscar una ciudad en la app (disparando `fetchCurrentWeather()` → `getOrCreateToken()` por primera vez), el mismo archivo pasó a tener una tercera entrada:
+
+```xml
+<string name="AVbp3FE3zlgK2EONZbOCXQHyPA4AZ7e/NCtoQ8O0mTe1Zg==">ARLnWWCZs/UZCPHzMoDoGtJTPrCW+ScwtC4BWPtw6F4ckcwSZ/pgwSJE76FYlEFTc3rES4uOiz0xRYbBQYQJA5bCsNPbo8zf6Je/19M=</string>
+```
+
+Un hallazgo más fuerte de lo esperado: con `PrefKeyEncryptionScheme.AES256_SIV` (determinístico), **ni siquiera el nombre de la clave `"install_token"` queda en texto plano** — tanto el nombre (`AVbp3FE3...`) como el valor (el UUID, cifrado con `AES256_GCM`) son blobs ilegibles sin la master key respaldada por Android Keystore. Contraste directo con `local.properties`/`BuildConfig` (v0.4), donde la key de OpenWeatherMap queda legible en texto plano en el binario: acá, ni abriendo el archivo con acceso de `run-as` se puede leer el token sin acceso al Keystore del dispositivo.
+
+**Qué no resuelve este control:** el token de instalación no reemplaza ni protege la API key de OpenWeatherMap — son secretos distintos. Tampoco pinnea nada ni afecta el transporte (eso ya lo cubre v0.6). Su único propósito es demostrar correctamente el único caso de uso para el que Keystore-backed storage tiene sentido según el documento: un secreto generado localmente en runtime.
+
+**Pendiente para el documento final:** captura de Android Studio mostrando `InstallTokenStore.kt`.
+
+## Etapas v0.8 en adelante — *(pendientes)*
+
+Ver el plan de trabajo para la lista completa (purga de historial de git sobre una copia descartable, cierre con SECURITY.md).

@@ -1,15 +1,18 @@
 package com.securitytraining.weatherapp.data.remote
 
 import com.securitytraining.weatherapp.BuildConfig
+import com.securitytraining.weatherapp.data.local.InstallTokenStore
 import com.securitytraining.weatherapp.data.remote.dto.CurrentWeatherDto
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 
 /** Thin wrapper around the Ktor [HttpClient] for OpenWeatherMap endpoints. */
 class WeatherApiService(
     private val httpClient: HttpClient,
+    private val installTokenStore: InstallTokenStore,
 ) {
     suspend fun fetchCurrentWeather(city: String): CurrentWeatherDto =
         httpClient.get("${BASE_URL}weather") {
@@ -20,6 +23,9 @@ class WeatherApiService(
             // evidence in docs/evidencia-practica-es.md.
             parameter("appid", BuildConfig.OPEN_WEATHER_API_KEY)
             parameter("units", "metric")
+            // Stage v0.7: unrelated runtime secret (not the provider key) stored
+            // via EncryptedSharedPreferences/Keystore -- see InstallTokenStore.
+            header("X-Install-Token", installTokenStore.getOrCreateToken())
         }.body()
 
     private companion object {
