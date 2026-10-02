@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.1-hardcoded-key` (an intentionally insecure baseline).
+🚧 Work in progress — currently at stage `v0.2-config-file-exposed` (still an intentionally insecure baseline).
 
 ## Setup
 

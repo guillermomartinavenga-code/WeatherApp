@@ -62,7 +62,7 @@ Single Gradle module (`app/`), Clean Architecture expressed through packages rat
 
 ```
 com.securitytraining.weatherapp
-├── core/           — Constants.kt: this is the file that changes shape across security stages
+├── core/           — key provisioning: this is the part that changes shape across security stages (AppConfig/ConfigLoader as of v0.2)
 ├── domain/         — pure Kotlin: WeatherRepository interface, GetCurrentWeatherUseCase, CurrentWeather model
 ├── data/           — Ktor-based WeatherApiService, DTOs (data/remote/dto), WeatherRepositoryImpl
 ├── presentation/   — Compose (WeatherScreen, WeatherViewModel, WeatherUiState) + theme/
