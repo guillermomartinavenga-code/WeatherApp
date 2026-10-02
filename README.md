@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.4-buildconfig-local-properties` (first fix stage: key no longer committed to git or bundled as a plain asset; still trivially extractable from the compiled binary — see the evidence doc).
+🚧 Work in progress — currently at stage `v0.5-provider-restriction-not-available` (documentation-only: confirmed OpenWeatherMap offers no per-key restriction by package/SHA-1/domain/IP, unlike some other providers — see the evidence doc).
 
 ## Setup
 

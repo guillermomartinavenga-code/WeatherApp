@@ -295,13 +295,30 @@ smali_classes11/com/securitytraining/weatherapp/BuildConfig.smali:13:.field publ
 
 Mismas dos ubicaciones, exactamente el mismo patrón, con un valor completamente distinto. Esto confirma que rotar la key (revocar la vieja, emitir una nueva) resuelve el problema de "¿sigue siendo válida la que se filtró?", pero **no** resuelve "¿puede alguien extraer la key actual del APK?" — son dos problemas distintos, y `BuildConfig` por sí solo no ataca el segundo. La key real y efectivamente rotada por Guillermo en el dashboard de OpenWeatherMap sigue el mismo patrón (verificado por él mismo con su propio valor, nunca compartido con Claude ni pegado en este documento).
 
-**Pendiente de Guillermo (fuera del repositorio, requerido para que la app funcione y para ver el enmascarado de CI en acción):**
-1. Generar la key real y desechable de OpenWeatherMap (si no lo hizo ya en el punto de pivote de v0.3).
-2. Agregarla a su `local.properties` local como `OPEN_WEATHER_API_KEY=<key real>` (Claude no puede tocar ese archivo).
-3. Registrar esa misma key como secret de repositorio en GitHub Actions con el nombre `OPEN_WEATHER_API_KEY`, para que el pipeline la inyecte y se pueda comparar el log enmascarado contra el de v0.3.
+**Verificación del enmascarado de CI (post-push):** el primer run con el secret todavía sin crear mostró `OpenWeatherMap key in use -> ` (vacío — no había nada que enmascarar porque `secrets.OPEN_WEATHER_API_KEY` no existía). Una vez que Guillermo creó el secret `OPEN_WEATHER_API_KEY` en Settings → Secrets and variables → Actions con su key real y re-corrió el job, el mismo paso mostró `OpenWeatherMap key in use -> ***` — confirmando el contraste buscado: mismo comando que en v0.3 (donde salía en texto plano), ahora oculto porque el valor vive en un secret registrado.
 
-**Pendiente para el documento final:** captura del log de GitHub Actions ya con el secret configurado (mostrando `***` en el paso `Debug print build environment`), y captura de Android Studio mostrando `BuildConfig.OPEN_WEATHER_API_KEY` resuelto en el autocompletado/build.
+**Pendiente para el documento final:** captura del log de GitHub Actions con el secret ya enmascarado (`***`), y captura de Android Studio mostrando `BuildConfig.OPEN_WEATHER_API_KEY` resuelto en el autocompletado/build.
 
-## Etapas v0.5 en adelante — *(pendientes)*
+## Etapa v0.5 — Restricción de key por proveedor: no disponible en OpenWeatherMap
 
-Ver el plan de trabajo para la lista completa (verificación de restricción por proveedor, certificate pinning, token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).
+**Referencia teórica:** §8.4 (restricción de keys por aplicación/dominio/IP como control complementario), §5 (limitaciones estructurales específicas de cada proveedor).
+
+**Qué se hizo:** no hay cambio de código en esta etapa — es un hallazgo negativo, documentado como tal, no parcheado. Se verificó qué opciones de restricción ofrece el dashboard de OpenWeatherMap para una API key, contrastado contra un proveedor que sí ofrece ese control.
+
+**Verificación (FAQ pública de OpenWeatherMap):**
+
+> "You can create as many keys as you like... Usage from all API keys associated with your account is combined and counted toward the same account limits."
+
+No hay mención en ningún punto de la documentación pública a restricción por package name de Android, huella SHA-1 del certificado de firma, HTTP referrer o IP. La única granularidad disponible es "cuántas keys tenés" y "borrar las que no uses" — los límites de uso (60 llamadas/min, 1.000.000/mes en el free tier) se aplican **a nivel de cuenta**, no por key individual.
+
+**Contraste con un proveedor que sí lo ofrece (Google Maps Platform, confirmado contra su documentación oficial):**
+
+> "Add the Android package name (from the AndroidManifest.xml file) and the SHA-1 signing certificate fingerprint of each Android application you want to authorize."
+
+Google Maps Platform permite atar una key a un `applicationId` + SHA-1 concretos, de forma que aunque la key se filtre, solo funciona desde builds firmados con ese certificado específico. OpenWeatherMap no tiene ningún control equivalente.
+
+**Qué significa esto para el proyecto:** confirma que §8.4 es un control real y valioso (y disponible en otros proveedores que Guillermo pueda usar en el futuro), pero **no aplicable** a OpenWeatherMap tal como está hoy. Esto refuerza por qué las etapas anteriores (BuildConfig, y las que siguen — certificate pinning, rotación) importan más acá que en un proveedor con restricción por app: sin esa restricción, rotación y minimizar la superficie de exposición son prácticamente los únicos controles disponibles del lado del cliente.
+
+## Etapas v0.6 en adelante — *(pendientes)*
+
+Ver el plan de trabajo para la lista completa (certificate pinning, token de runtime en EncryptedSharedPreferences, purga de historial, cierre con SECURITY.md).

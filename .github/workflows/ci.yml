@@ -18,11 +18,6 @@ jobs:
       # environment" step below: GitHub auto-masks any occurrence of a
       # registered secret's value in the log, unlike stage v0.3's plain env var.
       OPEN_WEATHER_API_KEY: ${{ secrets.OPEN_WEATHER_API_KEY }}
-      # Unrelated to the security staging: the repo never commits gradle.properties
-      # (see README.md), so the runner's Gradle daemon falls back to a 512 MiB max
-      # heap, which isn't enough for this build and causes GC thrashing / daemon
-      # kills. Override via env instead of adding gradle.properties.
-      GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx3072m -XX:+HeapDumpOnOutOfMemoryError"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
