@@ -496,6 +496,79 @@ Un hallazgo más fuerte de lo esperado: con `PrefKeyEncryptionScheme.AES256_SIV`
 
 **Pendiente para el documento final:** captura de Android Studio mostrando `InstallTokenStore.kt`.
 
-## Etapas v0.8 en adelante — *(pendientes)*
+## v0.8 — Demostración de remediación de historial de git (`git-filter-repo`)
 
-Ver el plan de trabajo para la lista completa (purga de historial de git sobre una copia descartable, cierre con SECURITY.md).
+**Alcance y por qué es una copia descartable:** en este proyecto nunca se filtró una key real (los valores "insecure" de v0.1–v0.3 son placeholders falsos). Por eso esta etapa no reescribe el historial real del repositorio — eso rompería la cadena de commits/tags que es la evidencia del ejercicio (ver `CLAUDE.md`: "Don't squash or rewrite this history"). En cambio, se clona el repo a una carpeta descartable fuera del proyecto y se demuestra ahí la técnica de purga que el documento de referencia recomienda (§8.2) para el caso real: un secreto que sí llegó a un remoto público.
+
+**Herramienta:** [`git-filter-repo`](https://github.com/newren/git-filter-repo) (sucesor mantenido activamente de `git filter-branch`/BFG Repo-Cleaner, recomendado por la propia documentación de Git). Instalado en el entorno vía `pip3 install --user git-filter-repo`.
+
+**Paso 1 — confirmar que el secreto placeholder de v0.1 (`b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b`) sigue recuperable en todo el historial real**, incluso en archivos que hoy ya no existen en el working tree:
+
+```
+$ git rev-list --all | xargs -I{} git grep -l "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b" {}
+1802397:docs/evidencia-practica-es.md
+2c67870:app/src/main/kotlin/com/securitytraining/weatherapp/core/Constants.kt
+2c67870:docs/evidencia-practica-es.md
+2cc6bf3:docs/evidencia-practica-es.md
+77f77d0:app/src/main/assets/config.json
+77f77d0:docs/evidencia-practica-es.md
+a80d3bf:docs/evidencia-practica-es.md
+c995706:docs/evidencia-practica-es.md
+ceca952:docs/evidencia-practica-es.md
+ceca952:.github/workflows/ci.yml
+```
+
+Hallazgo real no trivial: el secreto no solo vive en `Constants.kt` (v0.1) y `config.json` (v0.2, el archivo de configuración expuesto) — también quedó citado en el propio documento de evidencia (porque cada etapa pega snippets de código) y en el workflow de CI inseguro (`ceca952`, donde además se imprimía por `echo` en el log). Es exactamente el patrón que el documento de referencia advierte en §3: un secreto filtrado rara vez vive en un solo lugar.
+
+**Paso 2 — clonar a una carpeta descartable y ejecutar la purga:**
+
+```
+$ git clone /home/guillermo/Projects/Personal/security/WeatherApp weatherapp-history-demo
+$ cd weatherapp-history-demo
+$ echo 'b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b==>***REMOVED***' > replace-rules.txt
+$ git-filter-repo --replace-text replace-rules.txt --force
+NOTICE: Removing 'origin' remote; see 'Why is my origin removed?'
+        in the manual if you want to push back there.
+Parsed 7 commits
+New history written in 0.05 seconds; now repacking/cleaning...
+Repacking your repo and cleaning out old unneeded objects
+Completely finished after 0.13 seconds.
+```
+
+Nota de comportamiento real de la herramienta, no documentada explícitamente de antemano: `git-filter-repo` elimina el remoto `origin` automáticamente como medida de seguridad, precisamente para que nadie reescriba por accidente el historial de un remoto compartido sin un paso explícito e intencional.
+
+**Paso 3 — verificar el resultado.** Los 7 commits fueron reescritos (todos los hashes cambian, no solo el de v0.1, porque cada commit incluye el hash de su padre):
+
+| Etapa | Hash original | Hash reescrito |
+|---|---|---|
+| v0.1 | `2c67870` | `95ad86a` |
+| v0.2 | `77f77d0` | `463e69c` |
+| v0.3 | `ceca952` | `a6ed139` |
+| v0.4 | `1802397` | `7731337` |
+| v0.5 | `a80d3bf` | `8f07146` |
+| v0.6 | `2cc6bf3` | `0818c5a` |
+| v0.7 | `c995706` | `fbd8701` |
+
+Y una búsqueda del mismo string sobre **todo** el historial reescrito ya no encuentra nada:
+
+```
+$ git rev-list --all | xargs -I{} git grep -l "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b" {}
+(sin salida — exit code 123, ningún blob contiene el string)
+```
+
+Confirmación puntual en el blob reescrito de `Constants.kt` (primer commit, hash nuevo `95ad86a`):
+
+```kotlin
+const val OPEN_WEATHER_API_KEY = "***REMOVED***"
+```
+
+Mismo resultado en `config.json` (v0.2) y en `ci.yml` (v0.3) — la sustitución corrió sobre los tres lugares donde vivía el secreto, no solo el "principal".
+
+**Qué prueba esto y qué NO prueba:**
+- Prueba que la mecánica de purga funciona exactamente como describe §8.2: reescribe cada blob/commit que contenía el secreto, en todo el árbol de historia, no solo en el `HEAD` actual.
+- **No** prueba que esto sea suficiente como respuesta a un incidente real. Si el secreto ya fue pusheado a un remoto público (GitHub), cualquiera que ya haya hecho `fetch`/`clone` (incluidos forks, caches de GitHub, y el propio GitHub Archive) conserva los blobs viejos con el secreto indefinidamente — reescribir localmente y forzar el push no los hace desaparecer de ahí. Por eso el documento de referencia es explícito: **la única mitigación real ante una fuga ya pública es revocar/rotar la key** (lo que se documentó en v0.3 como el pivote hacia el key real desechable); la purga de historial es higiene adicional para evitar que quede trivialmente buscable en el propio repo, no un sustituto de la rotación.
+- Tampoco se hizo sobre el repo real de este proyecto: como nunca hubo una key real comprometida, forzar un rewrite del historial real solo destruiría la evidencia encadenada que es el objetivo del ejercicio (commits/tags v0.1→v0.9). La carpeta `weatherapp-history-demo` se descartó después de capturar esta evidencia.
+
+## Etapas v0.9 en adelante — *(pendientes)*
+
+Ver el plan de trabajo para la lista completa (cierre con `SECURITY.md`).

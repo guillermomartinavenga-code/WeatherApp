@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.7-encrypted-runtime-token` (a random install token, generated once and persisted via `EncryptedSharedPreferences`/Keystore, sent as a custom header — unrelated to and not a substitute for the OpenWeatherMap API key handling — see the evidence doc).
+🚧 Work in progress — currently at stage `v0.8-git-history-remediation-demo` (a disposable clone and `git-filter-repo` demonstrate purging a secret from git history — see the evidence doc for why this never touches the project's own, intentionally-preserved history).
 
 ## Setup
 
