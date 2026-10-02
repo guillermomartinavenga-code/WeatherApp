@@ -18,10 +18,17 @@ val localProperties =
         }
     }
 
+// Stage v0.9: fail loudly at configuration time rather than silently building
+// an app with an empty key (and a weather lookup that will always 401) --
+// a missing secret should break the build, not ship quietly.
 fun resolveOpenWeatherApiKey(): String =
     (project.findProperty("OPEN_WEATHER_API_KEY") as String?)
         ?: localProperties.getProperty("OPEN_WEATHER_API_KEY")
-        ?: ""
+        ?: throw GradleException(
+            "OPEN_WEATHER_API_KEY is not set. Provide it via " +
+                "-POPEN_WEATHER_API_KEY=<key> or app/local.properties " +
+                "(see CLAUDE.md for local setup / CI secret wiring).",
+        )
 
 android {
     namespace = "com.securitytraining.weatherapp"

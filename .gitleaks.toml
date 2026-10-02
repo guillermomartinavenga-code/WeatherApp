@@ -1,0 +1,20 @@
+title = "WeatherApp gitleaks config"
+
+[extend]
+useDefault = true
+
+# Stage v0.9: the two values below are fake, format-plausible placeholders
+# used throughout this project's intentionally-staged history (v0.1-v0.4)
+# and quoted repeatedly as code-snippet evidence in
+# docs/evidencia-practica-es.md -- neither was ever a real OpenWeatherMap
+# key. Without this allowlist, gitleaks correctly flags them on every CI
+# run, forever, since the staged history is never rewritten (see
+# CLAUDE.md). Scoped to these two exact values, not a path-based ignore,
+# so a real secret landing anywhere in the repo (including this doc) would
+# still be caught.
+[allowlist]
+description = "Known fake placeholders used by this security-training exercise, never real secrets"
+regexes = [
+  '''b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b''',
+  '''9f3c8a21b4e6d0729c1a5f8b3d6e9012''',
+]

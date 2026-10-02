@@ -6,7 +6,7 @@ A minimal Android weather app (Kotlin, Jetpack Compose, Clean Architecture, MVVM
 
 ## Status
 
-🚧 Work in progress — currently at stage `v0.8-git-history-remediation-demo` (a disposable clone and `git-filter-repo` demonstrate purging a secret from git history — see the evidence doc for why this never touches the project's own, intentionally-preserved history).
+✅ Done — `v0.9-final-hardening` closes the staged progression (`v0.1` → `v0.9`). See [`SECURITY.md`](SECURITY.md) for the final control-by-control status and [`docs/evidencia-practica-es.md`](docs/evidencia-practica-es.md) for the full stage-by-stage evidence.
 
 ## Setup
 

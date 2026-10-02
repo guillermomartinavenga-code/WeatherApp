@@ -569,6 +569,91 @@ Mismo resultado en `config.json` (v0.2) y en `ci.yml` (v0.3) — la sustitución
 - **No** prueba que esto sea suficiente como respuesta a un incidente real. Si el secreto ya fue pusheado a un remoto público (GitHub), cualquiera que ya haya hecho `fetch`/`clone` (incluidos forks, caches de GitHub, y el propio GitHub Archive) conserva los blobs viejos con el secreto indefinidamente — reescribir localmente y forzar el push no los hace desaparecer de ahí. Por eso el documento de referencia es explícito: **la única mitigación real ante una fuga ya pública es revocar/rotar la key** (lo que se documentó en v0.3 como el pivote hacia el key real desechable); la purga de historial es higiene adicional para evitar que quede trivialmente buscable en el propio repo, no un sustituto de la rotación.
 - Tampoco se hizo sobre el repo real de este proyecto: como nunca hubo una key real comprometida, forzar un rewrite del historial real solo destruiría la evidencia encadenada que es el objetivo del ejercicio (commits/tags v0.1→v0.9). La carpeta `weatherapp-history-demo` se descartó después de capturar esta evidencia.
 
-## Etapas v0.9 en adelante — *(pendientes)*
+## v0.9 — Cierre: `SECURITY.md`, CI endurecido y falla controlada sin secreto
 
-Ver el plan de trabajo para la lista completa (cierre con `SECURITY.md`).
+**Referencia teórica:** cierre general contra §13 (tabla de riesgos y controles) y §11 (verificación de controles, no solo su existencia).
+
+**Qué se hizo — tres cambios concretos, no solo el documento de cierre:**
+
+**1. `app/build.gradle.kts` ya no construye con una key vacía en silencio.** Antes, si ni `-POPEN_WEATHER_API_KEY` ni `local.properties` tenían el valor, `resolveOpenWeatherApiKey()` caía a `?: ""` — el build terminaba en `BUILD SUCCESSFUL` con una app que siempre iba a fallar en runtime con 401, sin ninguna señal en tiempo de compilación. Se reemplazó el fallback por una excepción explícita:
+
+```kotlin
+fun resolveOpenWeatherApiKey(): String =
+    (project.findProperty("OPEN_WEATHER_API_KEY") as String?)
+        ?: localProperties.getProperty("OPEN_WEATHER_API_KEY")
+        ?: throw GradleException(
+            "OPEN_WEATHER_API_KEY is not set. Provide it via " +
+                "-POPEN_WEATHER_API_KEY=<key> or app/local.properties " +
+                "(see CLAUDE.md for local setup / CI secret wiring).",
+        )
+```
+
+**Verificación real, en un clon limpio (sin `local.properties`, igual que vería un runner de CI):**
+
+```
+$ ./gradlew :app:assembleDebug -Pandroid.useAndroidX=true
+...
+FAILURE: Build failed with an exception.
+* Where: Build file '.../app/build.gradle.kts' line: 27
+* What went wrong:
+OPEN_WEATHER_API_KEY is not set. Provide it via -POPEN_WEATHER_API_KEY=<key> or app/local.properties (see CLAUDE.md for local setup / CI secret wiring).
+BUILD FAILED in 5s
+```
+
+```
+$ ./gradlew :app:assembleDebug -Pandroid.useAndroidX=true -POPEN_WEATHER_API_KEY=b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b
+...
+BUILD SUCCESSFUL in 3s
+```
+
+Confirmado en ambas direcciones: falla fuerte y clara sin el secreto, sigue construyendo normalmente con él.
+
+**2. `.github/workflows/ci.yml` incorpora los dos pasos que quedaban pendientes del plan original de CI/CD:**
+- Un paso que descarga y corre el binario de `gitleaks` v8.30.1 directamente (sin el wrapper `gitleaks-action`, que requiere licencia paga fuera de repos personales) sobre el historial completo (`fetch-depth: 0`).
+- Un job separado (`verify-fails-without-secret`) que corre el build *sin* pasar la key y espera que falle — si en algún momento alguien revierte el cambio del punto 1 sin darse cuenta, este job lo detecta.
+
+**3. Hallazgo real durante la implementación — el propio gitleaks iba a marcar en rojo cada corrida de CI para siempre.** Como el historial de este proyecto nunca se reescribe (ver `CLAUDE.md`), los placeholders ficticios de `v0.1`–`v0.4` (`b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b`, `9f3c8a21b4e6d0729c1a5f8b3d6e9012`) van a seguir apareciendo para siempre en commits viejos — y también citados en este mismo documento. Se verificó esto empíricamente antes de asumirlo:
+
+```
+$ gitleaks detect --source . -v --no-banner
+...
+leaks found: 11
+```
+
+Se agregó `.gitleaks.toml` con un *allowlist* acotado a estos dos valores exactos (no un `paths` que ignore archivos enteros, para no esconder un secreto real que caiga ahí):
+
+```toml
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known fake placeholders used by this security-training exercise, never real secrets"
+regexes = [
+  '''b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b''',
+  '''9f3c8a21b4e6d0729c1a5f8b3d6e9012''',
+]
+```
+
+**Verificación real de que el allowlist funciona (no solo que el TOML es sintácticamente válido):** se corrió gitleaks dos veces sobre el mismo historial, con y sin el archivo de config presente.
+
+```
+# con .gitleaks.toml (el de este repo)
+$ gitleaks detect --source . -v --no-banner
+8 commits scanned.
+no leaks found
+
+# el mismo comando, config movida temporalmente fuera del repo
+$ gitleaks detect --source . -v --no-banner
+8 commits scanned.
+leaks found: 11
+```
+
+El binario de `gitleaks` se descargó puntualmente para esta verificación (autorizado explícitamente por Guillermo en el momento, ya que el sistema de permisos bloquea por defecto que Claude descargue y ejecute binarios externos) y se borró del entorno apenas terminó la verificación.
+
+**4. `SECURITY.md` (raíz del repo):** recorre cada fila de la tabla §13 del documento de referencia y documenta, para este proyecto puntual, si el control está **Aplicado** (con la etapa que lo hizo), **No aplica** (con el hallazgo verificado que lo justifica, p. ej. la restricción por SHA-1 de `v0.5`) o **Fuera de alcance** (con la decisión explícita detrás, p. ej. no backend proxy). Incluye además una síntesis mínima de "qué hacer ante una fuga real", construida a partir de lo ya ejercitado en `v0.3`–`v0.5` y `v0.8`, en vez de dejar ese punto del documento de referencia (§8.12, playbook de incidentes) sin ningún correlato práctico.
+
+**Pendiente para el documento final:** nada nuevo de Android Studio en esta etapa (es la primera que no toca la app en sí) — sí vale capturar el run verde de GitHub Actions con los dos jobs nuevos (`build` con el paso de gitleaks, y `verify-fails-without-secret`).
+
+---
+
+Con esta etapa se cierra el recorrido planificado (`v0.1`→`v0.9`). El estado de cada control queda consolidado en [`SECURITY.md`](../SECURITY.md); este documento sigue siendo la bitácora paso a paso de cómo se llegó a eso.

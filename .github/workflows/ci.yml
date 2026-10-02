@@ -21,6 +21,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # Stage v0.9: full history, not just the last commit -- gitleaks
+          # below needs every commit to reproduce the v0.1/v0.8 findings
+          # documented in docs/evidencia-practica-es.md.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -34,6 +39,16 @@ jobs:
       - name: Debug print build environment
         run: echo "OpenWeatherMap key in use -> $OPEN_WEATHER_API_KEY"
 
+      # Stage v0.9: our own, reproducible scan of the full git history --
+      # not a wrapper action (gitleaks-action requires a paid license for
+      # non-personal org repos), just the MIT-licensed binary itself.
+      - name: Run gitleaks secret scan
+        run: |
+          curl -sSL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --source . -v
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
@@ -42,3 +57,31 @@ jobs:
 
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest -POPEN_WEATHER_API_KEY="$OPEN_WEATHER_API_KEY"
+
+  verify-fails-without-secret:
+    # Stage v0.9: §11 of the reference doc calls for verifying controls, not
+    # just asserting them -- this job proves app/build.gradle.kts now fails
+    # the build loudly when OPEN_WEATHER_API_KEY is missing, instead of
+    # silently shipping an APK with an empty key (the pre-v0.9 behavior).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Confirm build fails loudly without the API key
+        run: |
+          if ./gradlew :app:assembleDebug; then
+            echo "ERROR: build succeeded without OPEN_WEATHER_API_KEY set -- it should have failed."
+            exit 1
+          else
+            echo "OK: build failed as expected when the secret is absent."
+          fi
