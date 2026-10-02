@@ -162,9 +162,64 @@ Esto contradice el resultado negativo observado en v0.1 con el **mismo valor de 
 
 **Pendiente para el documento final:** captura de pantalla de la salida de consola de v0.1 y v0.2 (gitleaks, unzip, GH013), y de la pantalla de "Allow secret" de GitHub.
 
-## Etapa v0.3 — *(pendiente)*
+## Etapa v0.3 — `.gitignore` tardío + pipeline de CI/CD inseguro
 
-`.gitignore` agregado tarde — evidencia de persistencia en el historial. Punto de pivote: generación de la key real desechable y arranque del tramo de CI/CD inseguro.
+**Referencia teórica:** §3.1/§8.2 (persistencia en el historial de git), §3.5/§8.11 (secretos en pipelines de CI/CD).
+
+**Qué se hizo:** se agregó `app/src/main/assets/config.json` a `.gitignore` y se le quitó el tracking (`git rm --cached`) — el error clásico de pensar "ya lo gitignoré, ya está arreglado". El archivo sigue físicamente en el disco local (Guillermo lo sigue necesitando para compilar/correr localmente), pero deja de aparecer en commits futuros.
+
+**Evidencia de que el árbol actual "parece limpio":**
+
+```
+$ git ls-files | grep config.json
+(sin resultados -- no hay ningún config.json trackeado)
+```
+
+**Evidencia de que el valor sigue 100% recuperable del historial, pese a lo anterior:**
+
+```
+$ git log --all --oneline -- app/src/main/assets/config.json
+93d1a19 Stage v0.3: late .gitignore + insecure CI/CD pipeline
+77f77d0 Stage v0.2: move API key to an exposed plaintext config file
+
+$ git show 77f77d0:app/src/main/assets/config.json
+{
+    "openWeatherApiKey": "b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b",
+    "baseUrl": "https://api.openweathermap.org/data/2.5/"
+}
+```
+
+`git log --all` encuentra el archivo en los dos commits donde existió (su creación en v0.2 y su propio borrado/.gitignore en v0.3), y `git show <sha>:<path>` extrae el contenido completo de cualquiera de esos puntos del historial. Ni agregar `.gitignore` ni quitar el tracking borra nada del pasado — ambos solo afectan commits *futuros* (§3.1, confirmado aquí de forma concreta y no solo citado).
+
+**Efecto colateral honesto:** un clon nuevo del repositorio (como lo haría cualquier pipeline de CI) ya **no trae `config.json`** — se verificó clonando el repo a una carpeta temporal limpia: la carpeta `app/src/main/assets/` directamente no existe. `./gradlew :app:assembleDebug` y `:app:testDebugUnitTest` igual terminan en `BUILD SUCCESSFUL`, porque Gradle no necesita el asset en tiempo de compilación — pero una instalación real del APK fallaría al intentar leer la configuración en runtime (`ConfigLoader.load()` lanzaría una excepción). Esta "rotura" queda así, sin resolver, hasta la etapa v0.4 (`BuildConfig` + `local.properties`), que es la que introduce el mecanismo correcto de provisión de la key. No se oculta ni se parchea antes de tiempo: es consecuencia realista de intentar una solución apurada (`.gitignore` tardío) sin reemplazar todavía el mecanismo de carga.
+
+**Pipeline de CI/CD inseguro (`.github/workflows/ci.yml`):**
+
+Se agregó el primer workflow de GitHub Actions del proyecto — build + test en cada push/PR a `main` — con dos antipatrones deliberados de §3.5:
+
+```yaml
+env:
+  # INSECURE ON PURPOSE: hardcoded directly in the workflow file.
+  OPEN_WEATHER_API_KEY: b7e2f1a09c3d4e5f6a7b8c9d0e1f2a3b
+
+steps:
+  # ...
+  - name: Debug print build environment
+    run: echo "OpenWeatherMap key in use -> $OPEN_WEATHER_API_KEY"
+```
+
+1. El valor está escrito directamente en el archivo de definición del pipeline, que vive en el repositorio igual que cualquier otro archivo fuente.
+2. Se imprime en texto plano al log del build vía `echo` — GitHub Actions solo enmascara (`***`) valores registrados como *secret* encriptado en la configuración del repo, no variables hardcodeadas como ésta.
+
+**Nota de honestidad:** el build de Gradle **no** consume todavía esta variable — la app sigue sin tener wireada ninguna key real (seguimos en demo estática). Este secreto del workflow existe únicamente para demostrar, de forma aislada, el antipatrón específico de CI/CD; la variable se conecta al build recién en v0.4, cuando se reemplaza por un secret real de GitHub Actions.
+
+**Verificación realizada en esta etapa:**
+- `./gradlew :app:assembleDebug` y `:app:testDebugUnitTest` → `BUILD SUCCESSFUL`, tanto en el working tree local como en un clon limpio (sin `config.json`).
+- Runner verificado: `ubuntu-latest` trae preinstalado el Android SDK (`android-37`, build-tools `37.0.0`) con `ANDROID_HOME`/`ANDROID_SDK_ROOT` ya configurados — confirmado contra la [documentación de `actions/runner-images`](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md), no asumido. El workflow no necesita un paso adicional de `setup-android`.
+
+**Punto de pivote (acción de Guillermo, fuera del repositorio):** a partir de aquí corresponde generar la key real y desechable de OpenWeatherMap (para las capturas de creación/revocación/rotación) y tenerla lista para la etapa v0.4, que es la primera que la conecta de verdad a través de `local.properties`. Esa key real nunca se pega en este documento ni en ningún archivo gestionado por Claude.
+
+**Pendiente para el documento final:** captura de la ejecución real de este workflow en GitHub Actions (incluyendo el log con la key impresa en texto plano), y captura de la pantalla de creación de la key real en el dashboard de OpenWeatherMap.
 
 ## Etapas v0.4 en adelante — *(pendientes)*
 

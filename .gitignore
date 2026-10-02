@@ -9,6 +9,11 @@ captures/
 local.properties
 *.hprof
 
+# Stage v0.3: added late, after config.json was already committed in stage
+# v0.2. See docs/evidencia-practica-es.md -- this alone does not remove the
+# value from git history.
+app/src/main/assets/config.json
+
 # Signing
 *.jks
 *.keystore
